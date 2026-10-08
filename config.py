@@ -11,7 +11,10 @@ EQUIPMENT_BARCODE_PREFIX = "HCequipment-"
 HOME_LOCATION = "Chem Room"
 LOCAL_TIMEZONE = ZoneInfo("America/New_York")
 REQUEST_TIMEOUT = 30
+
 CCD_CONDITION_ID = "eff64819-ca1b-4a45-b7ec-ebbe9d59255c"
+ALL_JOBS_ENDPOINT = "/api/Job/ListAllJobListItem"
+JOB_LOOKBACK_DAYS = 14
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORT_DIR = BASE_DIR / "reports"
