@@ -1,4 +1,20 @@
+# Python environment
 .venv/
+venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Authentication and secrets
+browser_profile/
 .env
+
+# Financial database and generated reports
+data/*.db
+data/*.db-*
+reports/
+logs/
+
+# Local system files
+.DS_Store
+Thumbs.db
