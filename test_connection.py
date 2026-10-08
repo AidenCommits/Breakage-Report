@@ -1,5 +1,5 @@
 from auth import ContentsTrackBrowser
-from ct_api import ContentsTrackAPI
+from ct_api import ContentsTrackApi
 
 def main():
 
@@ -14,12 +14,12 @@ def main():
         print("waiting for authentication...")
         print()
 
-        if not browser.wait_for_api_headers(timeout=30):
+        if not browser.wait_for_api_headers(timeout=90):
             raise RuntimeError("Failed to capture authenticated API headers.")
 
         session_data = browser.get_api_session_data()
 
-        api = ContentsTrackAPI(
+        api = ContentsTrackApi(
             headers=session_data["headers"],
             cookies=session_data["cookies"]
         )
