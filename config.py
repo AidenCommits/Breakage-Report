@@ -18,5 +18,9 @@ JOB_LOOKBACK_DAYS = 14
 
 BASE_DIR = Path(__file__).resolve().parent
 REPORT_DIR = BASE_DIR / "reports"
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+DATABASE_PATH = DATA_DIR / "breakage.db"
 
 REPORT_DIR.mkdir(exist_ok=True)
