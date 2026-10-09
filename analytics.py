@@ -53,8 +53,8 @@ def calculate_analytics(events, now=None):
         now = datetime.now(timezone.utc)
 
     week_start = get_week_start(now)
-    #week_end = week_start - timedelta(days=7)
-    week_end = week_start + timedelta(days=7)
+    week_end = week_start - timedelta(days=7)
+    #week_end = week_start + timedelta(days=7)
 
     weekly_total = Decimal("0")
     cumulative_total = Decimal("0")
@@ -91,19 +91,19 @@ def calculate_analytics(events, now=None):
     history = []
     current_week = first_week
 
-    #while current_week < week_end:
-    while current_week <= week_start:
+    while current_week < week_end:
+    #while current_week <= week_start:
         history.append({
             "week_start": current_week,
             "total": weekly_history[current_week],
         })
         current_week += timedelta(days=7)
 
-    # completed_weeks = [
-    #      week for week in history
-    #      if week["week_start"] < week_end
-    # ]
-    completed_weeks = history[:-1]
+    completed_weeks = [
+         week for week in history
+         if week["week_start"] < week_end
+    ]
+    #completed_weeks = history[:-1]
 
     if completed_weeks:
         average_weekly_loss = (

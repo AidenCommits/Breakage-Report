@@ -1,9 +1,8 @@
-
 from auth import ContentsTrackBrowser
 from ct_api import ContentsTrackApi
 from processor import scan_recent_jobs
 from database import initialize_database, save_damage_record
-
+from report import generate_report
 
 def main():
     browser = ContentsTrackBrowser()
@@ -25,6 +24,8 @@ def main():
         )
 
         # Retrieve CCD records from recently modified jobs.
+        print("\nScanning ContentsTrack jobs...")
+
         records = scan_recent_jobs(api)
 
         print(f"\nFound {len(records)} CCD items.")
@@ -48,6 +49,17 @@ def main():
 
         for status, count in results.items():
             print(f"{status}: {count}")
+
+        # Generate the Excel report after the database
+        # has been successfully updated.
+        print("\nGenerating Excel report...")
+
+        report_path = generate_report()
+
+        print("\n================================")
+        print("BREAKAGE REPORT COMPLETE")
+        print("================================")
+        print(f"Report saved to: {report_path}")
 
     finally:
         browser.close()

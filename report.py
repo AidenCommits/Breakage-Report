@@ -1,9 +1,17 @@
-
 from datetime import datetime, timedelta
 from decimal import Decimal
+from math import ceil, log10
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.text import (
+    Paragraph,
+    ParagraphProperties,
+    CharacterProperties,
+    Font as DrawingFont,
+)
 from openpyxl.styles import (
     Font,
     PatternFill,
@@ -44,7 +52,7 @@ def configure_printing(ws, repeat_headers=True):
     ws.page_setup.orientation = "landscape"
     ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
 
-    # Fit to one page wide, but allow multiple pages tall.
+    # Fit tables to one page wide, allowing multiple pages tall.
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
@@ -123,7 +131,7 @@ def style_table(ws, header_row=1):
     for row_number in range(header_row + 1, ws.max_row + 1):
         ws.row_dimensions[row_number].height = 25
 
-    # Size columns based on their contents.
+    # Automatically size columns based on contents.
     for column in ws.columns:
         column_letter = get_column_letter(column[0].column)
 
@@ -147,6 +155,78 @@ def style_table(ws, header_row=1):
     ws.print_area = (
         f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
     )
+
+
+# --------------------------------------------------
+# CHART HELPERS
+# --------------------------------------------------
+
+def set_axis_font_size(axis, size=14):
+    """Increase chart axis tick-label font size."""
+
+    character_properties = CharacterProperties(
+        latin=DrawingFont(typeface="Aptos"),
+        sz=size * 100,
+    )
+
+    axis.txPr = RichText(
+        p=[
+            Paragraph(
+                pPr=ParagraphProperties(
+                    defRPr=character_properties
+                ),
+                endParaRPr=character_properties,
+            )
+        ]
+    )
+
+
+def set_data_label_font_size(chart, size=14):
+    """Increase chart data-label font size."""
+
+    character_properties = CharacterProperties(
+        latin=DrawingFont(typeface="Aptos"),
+        sz=size * 100,
+        b=True,
+    )
+
+    chart.dataLabels.txPr = RichText(
+        p=[
+            Paragraph(
+                pPr=ParagraphProperties(
+                    defRPr=character_properties
+                ),
+                endParaRPr=character_properties,
+            )
+        ]
+    )
+
+
+def choose_dollar_axis(max_value):
+    """
+    Choose readable dollar-axis increments.
+
+    Examples:
+        $150 maximum -> $50 increments
+        $900 maximum -> $250 increments
+        $4,000 maximum -> $1,000 increments
+    """
+
+    if max_value <= 0:
+        return 50, 200
+
+    target_step = max_value / 4
+    magnitude = 10 ** int(log10(target_step))
+
+    for multiplier in (1, 2, 2.5, 5, 10):
+        step = multiplier * magnitude
+
+        if step >= target_step:
+            break
+
+    maximum = ceil(max_value / step) * step
+
+    return step, maximum
 
 
 # --------------------------------------------------
@@ -274,7 +354,6 @@ def build_damage_register(wb, records):
 
     style_table(ws)
 
-    # Balance columns for landscape printing.
     column_widths = {
         "A": 24,
         "B": 36,
@@ -308,13 +387,12 @@ def build_historical_trends(wb, results):
         running_total += week["total"]
 
         ws.append([
-            week["week_start"].date(),
+            week["week_start"].strftime("%b %d, %Y"),
             float(week["total"]),
             float(running_total),
         ])
 
     for row in range(2, ws.max_row + 1):
-        ws.cell(row, 1).number_format = "mmm d, yyyy"
         ws.cell(row, 2).number_format = CURRENCY_FORMAT
         ws.cell(row, 3).number_format = CURRENCY_FORMAT
 
@@ -326,11 +404,11 @@ def build_historical_trends(wb, results):
 
 
 # --------------------------------------------------
-# CHART SHEETS
+# CHART WORKSHEET FORMATTING
 # --------------------------------------------------
 
 def configure_chart_sheet(ws):
-    """Set up a worksheet dedicated to one chart."""
+    """Configure a separate printable worksheet for each chart."""
 
     configure_printing(ws, repeat_headers=False)
 
@@ -338,8 +416,6 @@ def configure_chart_sheet(ws):
     ws.page_setup.fitToHeight = 1
 
     ws.sheet_view.showGridLines = False
-
-    # Establish a large printable area for the chart.
     ws.print_area = "A1:P35"
 
     for column_number in range(1, 17):
@@ -350,10 +426,45 @@ def configure_chart_sheet(ws):
         ws.row_dimensions[row_number].height = 20
 
 
+def show_no_data_message(ws):
+    """Display a message instead of an empty chart."""
+
+    from openpyxl.styles import Font, Alignment
+
+    ws.merge_cells("B10:N13")
+
+    cell = ws["B10"]
+    cell.value = (
+        "No financial losses recorded "
+        "for this reporting period."
+    )
+
+    cell.font = Font(
+        name="Aptos",
+        size=18,
+        bold=True,
+        color="666666",
+    )
+
+    cell.alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
+    )
+
+# --------------------------------------------------
+# WEEKLY LOSS CHART
+# --------------------------------------------------
+
 def build_weekly_loss_chart(wb):
     data_ws = wb["Historical Trends"]
-
     ws = wb.create_sheet("Weekly Loss Chart")
+
+        # Don't create a chart when there is no data.
+    if data_ws.max_row <= 1:
+        configure_chart_sheet(ws)
+        show_no_data_message(ws)
+        return
 
     chart = BarChart()
     chart.type = "col"
@@ -362,6 +473,28 @@ def build_weekly_loss_chart(wb):
     chart.title = "Weekly Financial Losses"
     chart.y_axis.title = "Loss ($)"
     chart.x_axis.title = "Reporting Week"
+
+    # Determine readable dollar increments.
+    values = [
+        float(data_ws.cell(row, 2).value or 0)
+        for row in range(2, data_ws.max_row + 1)
+    ]
+
+    step, maximum = choose_dollar_axis(
+        max(values, default=0)
+    )
+
+    chart.y_axis.scaling.min = 0
+    chart.y_axis.scaling.max = maximum
+    chart.y_axis.majorUnit = step
+    chart.y_axis.numFmt = '"$"#,##0'
+    chart.y_axis.tickLblPos = "nextTo"
+
+    # Display reporting-week dates.
+    chart.x_axis.tickLblPos = "nextTo"
+
+    set_axis_font_size(chart.x_axis, 14)
+    set_axis_font_size(chart.y_axis, 14)
 
     chart.add_data(
         Reference(
@@ -383,26 +516,64 @@ def build_weekly_loss_chart(wb):
             )
         )
 
-    chart.width = 24
-    chart.height = 15
+    # Display exact dollar values above bars.
+    chart.dataLabels = DataLabelList()
+    chart.dataLabels.showVal = True
+    chart.dataLabels.dLblPos = "outEnd"
+
+    set_data_label_font_size(chart, 14)
+
+    # One series, so no legend is necessary.
+    chart.legend = None
+
+    chart.width = 25
+    chart.height = 16
 
     ws.add_chart(chart, "B2")
-
     configure_chart_sheet(ws)
 
 
+# --------------------------------------------------
+# CUMULATIVE LOSS CHART
+# --------------------------------------------------
+
 def build_cumulative_loss_chart(wb):
     data_ws = wb["Historical Trends"]
-
     ws = wb.create_sheet("Cumulative Loss Chart")
+
+        # Don't create a chart when there is no data.
+    if data_ws.max_row <= 1:
+        configure_chart_sheet(ws)
+        show_no_data_message(ws)
+        return
 
     chart = LineChart()
     chart.style = 13
-    chart.marker = True
 
     chart.title = "Cumulative Financial Losses"
     chart.y_axis.title = "Total Loss ($)"
     chart.x_axis.title = "Reporting Week"
+
+    # Determine readable dollar increments.
+    values = [
+        float(data_ws.cell(row, 3).value or 0)
+        for row in range(2, data_ws.max_row + 1)
+    ]
+
+    step, maximum = choose_dollar_axis(
+        max(values, default=0)
+    )
+
+    chart.y_axis.scaling.min = 0
+    chart.y_axis.scaling.max = maximum
+    chart.y_axis.majorUnit = step
+    chart.y_axis.numFmt = '"$"#,##0'
+    chart.y_axis.tickLblPos = "nextTo"
+
+    chart.x_axis.tickLblPos = "nextTo"
+
+    set_axis_font_size(chart.x_axis, 14)
+    set_axis_font_size(chart.y_axis, 14)
 
     chart.add_data(
         Reference(
@@ -424,18 +595,27 @@ def build_cumulative_loss_chart(wb):
             )
         )
 
-    # Display individual data points even when
-# only one week of data exists.
+    # Visible markers for each week's cumulative total.
     for series in chart.series:
         series.marker.symbol = "circle"
         series.marker.size = 10
         series.graphicalProperties.line.width = 28575
 
-    chart.width = 24
-    chart.height = 15
+    # Display exact dollar values near points.
+    chart.dataLabels = DataLabelList()
+    chart.dataLabels.showVal = True
+    chart.dataLabels.dLblPos = "t"
+
+    set_data_label_font_size(chart, 14)
+
+    # Position legend beneath the chart.
+    if chart.legend is not None:
+        chart.legend.position = "b"
+
+    chart.width = 25
+    chart.height = 16
 
     ws.add_chart(chart, "B2")
-
     configure_chart_sheet(ws)
 
 
@@ -444,7 +624,7 @@ def build_cumulative_loss_chart(wb):
 # --------------------------------------------------
 
 def generate_report():
-    """Generate the management-ready Excel report."""
+    """Generate the complete Excel management report."""
 
     events = get_financial_events()
     results = calculate_analytics(events)
@@ -457,9 +637,10 @@ def generate_report():
     build_damage_register(wb, damage_records)
     build_historical_trends(wb, results)
 
-    # Charts are separate from all tables.
     build_weekly_loss_chart(wb)
     build_cumulative_loss_chart(wb)
+
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now(
         LOCAL_TIMEZONE
