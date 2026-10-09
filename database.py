@@ -1,4 +1,3 @@
-
 import sqlite3
 
 from config import DATABASE_PATH
@@ -46,7 +45,9 @@ def initialize_database():
                 event_type TEXT NOT NULL,
                 amount TEXT NOT NULL,
                 recorded_at TEXT NOT NULL,
-
+                job_id TEXT,
+                job_name TEXT,
+                cost_type TEXT,
                 FOREIGN KEY (item_id)
                     REFERENCES damaged_items(item_id)
             )
@@ -91,61 +92,90 @@ def save_damage_record(record):
         ).fetchone()
 
         if existing is None:
-            # First time discovering this CCD item.
             connection.execute(
                 """
                 INSERT INTO damaged_items (
-                    item_id, job_id, job_name,
-                    description, room, quantity,
-                    cost_type, current_cost, status,
-                    first_seen, last_seen
+                    item_id,
+                    job_id,
+                    job_name,
+                    description,
+                    room,
+                    quantity,
+                    cost_type,
+                    current_cost,
+                    status,
+                    first_seen,
+                    last_seen
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    item_id,
+                    record["item_id"],
                     record["job_id"],
                     record.get("job_name"),
                     record.get("description"),
                     record.get("room"),
                     record.get("quantity"),
-                    record.get("cost_type") if new_status == "READY" else None,
-                    str(new_cost) if new_status == "READY" else None,
+                    record.get("cost_type"),
+                    str(new_cost) if new_cost is not None else None,
                     new_status,
                     now,
                     now,
-                )
+                ),
             )
 
             if new_status == "READY":
+
+                # NEW SECTION 1:
+                # Store a snapshot of job and cost type
+                # when the initial financial loss occurs.
                 connection.execute(
                     """
                     INSERT INTO financial_events (
-                        item_id, event_type, amount, recorded_at
+                        item_id,
+                        event_type,
+                        amount,
+                        recorded_at,
+                        job_id,
+                        job_name,
+                        cost_type
                     )
-                    VALUES (?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (item_id, "NEW_LOSS", str(new_cost), now)
+                    (
+                        record["item_id"],
+                        "NEW_LOSS",
+                        str(new_cost),
+                        now,
+                        record["job_id"],
+                        record.get("job_name"),
+                        record.get("cost_type"),
+                    ),
                 )
 
             return "NEW"
-
-        # Item already exists in our database.
+        # ------------------------------------------
+        # CASE 2: Existing damaged item
+        # ------------------------------------------
         old_cost = (
             Decimal(existing["current_cost"])
             if existing["current_cost"] is not None
             else None
         )
 
-        # A pending/review result should not erase
-        # a previously verified financial amount.
+        # Item is pending or needs review.
+        # Preserve any previously recorded cost.
         if new_status != "READY":
             connection.execute(
                 """
                 UPDATE damaged_items
-                SET job_id = ?, job_name = ?,
-                    description = ?, room = ?,
-                    quantity = ?, status = ?,
+                SET
+                    job_id = ?,
+                    job_name = ?,
+                    description = ?,
+                    room = ?,
+                    quantity = ?,
+                    status = ?,
                     last_seen = ?
                 WHERE item_id = ?
                 """,
@@ -157,21 +187,25 @@ def save_damage_record(record):
                     record.get("quantity"),
                     new_status,
                     now,
-                    item_id,
-                )
+                    record["item_id"],
+                ),
             )
 
             return "PENDING_REVIEW"
 
-        new_cost = Decimal(str(new_cost))
-
+        # Update the item with its latest valid cost.
         connection.execute(
             """
             UPDATE damaged_items
-            SET job_id = ?, job_name = ?,
-                description = ?, room = ?,
-                quantity = ?, cost_type = ?,
-                current_cost = ?, status = ?,
+            SET
+                job_id = ?,
+                job_name = ?,
+                description = ?,
+                room = ?,
+                quantity = ?,
+                cost_type = ?,
+                current_cost = ?,
+                status = ?,
                 last_seen = ?
             WHERE item_id = ?
             """,
@@ -185,42 +219,103 @@ def save_damage_record(record):
                 str(new_cost),
                 new_status,
                 now,
-                item_id,
-            )
+                record["item_id"],
+            ),
         )
 
+        
         if old_cost is None:
             # Previously pending; cost now available.
-            connection.execute(
-                """
-                INSERT INTO financial_events (
-                    item_id, event_type, amount, recorded_at
-                )
-                VALUES (?, ?, ?, ?)
-                """,
-                (item_id, "NEW_LOSS", str(new_cost), now)
+            event_type = "NEW_LOSS"
+            amount = new_cost
+            result = "COST_ADDED"
+
+        elif new_cost != old_cost:
+            # Existing cost has changed.
+            event_type = "COST_ADJUSTMENT"
+            amount = new_cost - old_cost
+            result = "ADJUSTED"
+
+        else:
+            # No financial changes.
+            return "UNCHANGED"
+
+        # Save the financial event with historical metadata.
+        connection.execute(
+            """
+            INSERT INTO financial_events (
+                item_id,
+                event_type,
+                amount,
+                recorded_at,
+                job_id,
+                job_name,
+                cost_type
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item_id,
+                event_type,
+                str(amount),
+                now,
+                record["job_id"],
+                record.get("job_name"),
+                record.get("cost_type"),
+            ),
+        )
 
-            return "COST_ADDED"
+        return result
 
-        if new_cost != old_cost:
-            difference = new_cost - old_cost
 
-            connection.execute(
-                """
-                INSERT INTO financial_events (
-                    item_id, event_type, amount, recorded_at
+def migrate_financial_events():
+    """Add historical metadata columns to existing databases."""
+
+    columns_to_add = {
+        "job_id": "TEXT",
+        "job_name": "TEXT",
+        "cost_type": "TEXT",
+    }
+
+    with get_connection() as connection:
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(financial_events)"
+            ).fetchall()
+        }
+
+        for column, column_type in columns_to_add.items():
+            if column not in existing_columns:
+                connection.execute(
+                    f"ALTER TABLE financial_events "
+                    f"ADD COLUMN {column} {column_type}"
                 )
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    item_id,
-                    "COST_ADJUSTMENT",
-                    str(difference),
-                    now,
+
+        # Backfill existing events from their current item
+        # metadata. This is an approximation for older events.
+        connection.execute("""
+            UPDATE financial_events
+            SET
+                job_id = (
+                    SELECT job_id
+                    FROM damaged_items
+                    WHERE damaged_items.item_id =
+                          financial_events.item_id
+                ),
+                job_name = (
+                    SELECT job_name
+                    FROM damaged_items
+                    WHERE damaged_items.item_id =
+                          financial_events.item_id
+                ),
+                cost_type = (
+                    SELECT cost_type
+                    FROM damaged_items
+                    WHERE damaged_items.item_id =
+                          financial_events.item_id
                 )
-            )
+            WHERE job_id IS NULL
+        """)
 
-            return "ADJUSTED"
-
-        return "UNCHANGED"
+    print("Financial event migration complete.")
