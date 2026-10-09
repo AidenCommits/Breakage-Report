@@ -3,3 +3,5 @@ playwright
 pandas
 openpyxl
 pytest
+matplotlib
+pillow

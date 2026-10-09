@@ -1,658 +1,320 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
-from math import ceil, log10
+from io import BytesIO
+from math import ceil, floor, log10
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, MultipleLocator
 
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, LineChart, Reference
-from openpyxl.chart.label import DataLabelList
-from openpyxl.chart.text import RichText
-from openpyxl.drawing.text import (
-    Paragraph,
-    ParagraphProperties,
-    CharacterProperties,
-    Font as DrawingFont,
-)
-from openpyxl.styles import (
-    Font,
-    PatternFill,
-    Alignment,
-    Border,
-    Side,
-)
+from openpyxl.drawing.image import Image as ExcelImage
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.page import PageMargins
 
-from analytics import get_financial_events, calculate_analytics
+from analytics import calculate_analytics, get_financial_events
+from config import LOCAL_TIMEZONE, REPORT_DIR
 from database import get_connection
-from config import REPORT_DIR, LOCAL_TIMEZONE
 
-
-# --------------------------------------------------
-# REPORT STYLING
-# --------------------------------------------------
-
-HEADER_COLOR = "17365D"
-ALTERNATE_COLOR = "EAF2F8"
+NAVY = "17365D"
+LIGHT_BLUE = "EAF2F8"
 WHITE = "FFFFFF"
-BLACK = "000000"
-
-CURRENCY_FORMAT = '$#,##0.00;[Red]($#,##0.00)'
-
-THIN_BLACK_BORDER = Border(
-    left=Side(style="thin", color=BLACK),
-    right=Side(style="thin", color=BLACK),
-    top=Side(style="thin", color=BLACK),
-    bottom=Side(style="thin", color=BLACK),
-)
+BORDER_COLOR = "9DB1C5"
+CURRENCY_FORMAT = '"$"#,##0.00;[Red]("$"#,##0.00)'
 
 
 def configure_printing(ws, repeat_headers=True):
-    """Configure worksheets for landscape printing."""
-
+    ws.sheet_view.showGridLines = False
     ws.page_setup.orientation = "landscape"
     ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
-
-    # Fit tables to one page wide, allowing multiple pages tall.
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
-
-    ws.page_margins = PageMargins(
-        left=0.25,
-        right=0.25,
-        top=0.40,
-        bottom=0.40,
-        header=0.15,
-        footer=0.15,
-    )
-
     ws.print_options.horizontalCentered = True
-    ws.sheet_view.showGridLines = False
-
+    ws.page_margins = PageMargins(
+        left=0.3, right=0.3, top=0.45, bottom=0.45,
+        header=0.2, footer=0.2,
+    )
+    ws.oddFooter.center.text = "Page &P of &N"
     if repeat_headers:
         ws.print_title_rows = "1:1"
 
-    ws.oddFooter.center.text = "Page &P of &N"
-
 
 def style_table(ws, header_row=1):
-    """Apply borders, alternating colors, and readable sizing."""
-
-    ws.freeze_panes = f"A{header_row + 1}"
-
-    for row in ws.iter_rows(
-        min_row=header_row,
-        max_row=ws.max_row,
-    ):
-        for cell in row:
-            cell.border = THIN_BLACK_BORDER
-
-            if cell.row == header_row:
-                cell.font = Font(
-                    name="Aptos",
-                    size=11,
-                    bold=True,
-                    color=WHITE,
-                )
-                cell.fill = PatternFill(
-                    fill_type="solid",
-                    fgColor=HEADER_COLOR,
-                )
-                cell.alignment = Alignment(
-                    horizontal="center",
-                    vertical="center",
-                    wrap_text=True,
-                )
-            else:
-                cell.font = Font(
-                    name="Aptos",
-                    size=10,
-                    color=BLACK,
-                )
-
-                if (cell.row - header_row) % 2 == 0:
-                    cell.fill = PatternFill(
-                        fill_type="solid",
-                        fgColor=ALTERNATE_COLOR,
-                    )
-                else:
-                    cell.fill = PatternFill(
-                        fill_type="solid",
-                        fgColor=WHITE,
-                    )
-
-                cell.alignment = Alignment(
-                    vertical="center",
-                    wrap_text=True,
-                )
-
-    ws.row_dimensions[header_row].height = 30
-
-    for row_number in range(header_row + 1, ws.max_row + 1):
-        ws.row_dimensions[row_number].height = 25
-
-    # Automatically size columns based on contents.
-    for column in ws.columns:
-        column_letter = get_column_letter(column[0].column)
-
-        max_length = max(
-            len(str(cell.value or ""))
-            for cell in column
-        )
-
-        ws.column_dimensions[column_letter].width = min(
-            max(max_length + 4, 18),
-            48,
-        )
-
-    ws.auto_filter.ref = (
-        f"A{header_row}:"
-        f"{get_column_letter(ws.max_column)}{ws.max_row}"
-    )
-
     configure_printing(ws)
+    thin = Side(style="thin", color=BORDER_COLOR)
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            if cell.row == header_row:
+                cell.fill = PatternFill("solid", fgColor=NAVY)
+                cell.font = Font(name="Aptos", size=11, bold=True, color=WHITE)
+            else:
+                cell.fill = PatternFill(
+                    "solid", fgColor=WHITE if cell.row % 2 == 0 else LIGHT_BLUE
+                )
+                cell.font = Font(name="Aptos", size=10)
+    ws.row_dimensions[header_row].height = 30
+    for row in range(header_row + 1, ws.max_row + 1):
+        ws.row_dimensions[row].height = 26
+    for col in range(1, ws.max_column + 1):
+        letter = get_column_letter(col)
+        longest = max(
+            (len(str(ws.cell(row, col).value or "")) for row in range(1, ws.max_row + 1)),
+            default=10,
+        )
+        ws.column_dimensions[letter].width = min(max(longest + 3, 16), 55)
+    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = f"A{header_row + 1}"
+    ws.print_area = ws.dimensions
 
-    ws.print_area = (
-        f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
-    )
-
-
-# --------------------------------------------------
-# CHART HELPERS
-# --------------------------------------------------
-
-def set_axis_font_size(axis, size=14):
-    """Increase chart axis tick-label font size."""
-
-    character_properties = CharacterProperties(
-        latin=DrawingFont(typeface="Aptos"),
-        sz=size * 100,
-    )
-
-    axis.txPr = RichText(
-        p=[
-            Paragraph(
-                pPr=ParagraphProperties(
-                    defRPr=character_properties
-                ),
-                endParaRPr=character_properties,
-            )
-        ]
-    )
-
-
-def set_data_label_font_size(chart, size=14):
-    """Increase chart data-label font size."""
-
-    character_properties = CharacterProperties(
-        latin=DrawingFont(typeface="Aptos"),
-        sz=size * 100,
-        b=True,
-    )
-
-    chart.dataLabels.txPr = RichText(
-        p=[
-            Paragraph(
-                pPr=ParagraphProperties(
-                    defRPr=character_properties
-                ),
-                endParaRPr=character_properties,
-            )
-        ]
-    )
-
-
-def choose_dollar_axis(max_value):
-    """
-    Choose readable dollar-axis increments.
-
-    Examples:
-        $150 maximum -> $50 increments
-        $900 maximum -> $250 increments
-        $4,000 maximum -> $1,000 increments
-    """
-
-    if max_value <= 0:
-        return 50, 200
-
-    target_step = max_value / 4
-    magnitude = 10 ** int(log10(target_step))
-
-    for multiplier in (1, 2, 2.5, 5, 10):
-        step = multiplier * magnitude
-
-        if step >= target_step:
-            break
-
-    maximum = ceil(max_value / step) * step
-
-    return step, maximum
-
-
-# --------------------------------------------------
-# DATABASE QUERIES
-# --------------------------------------------------
 
 def get_damage_register():
-    """Retrieve all tracked CCD items."""
-
     with get_connection() as connection:
         rows = connection.execute("""
-            SELECT
-                job_name,
-                description,
-                room,
-                quantity,
-                cost_type,
-                current_cost,
-                status
+            SELECT job_name, description, room, quantity,
+                   cost_type, current_cost, status
             FROM damaged_items
             ORDER BY job_name, description
         """).fetchall()
-
     return [dict(row) for row in rows]
 
-
-# --------------------------------------------------
-# EXECUTIVE SUMMARY
-# --------------------------------------------------
 
 def build_executive_summary(wb, results):
     ws = wb.active
     ws.title = "Executive Summary"
-
-    week_start = results["week_start"].date()
-    week_end = (
-        results["week_end"] - timedelta(days=1)
-    ).date()
-
-    ws.append(["Metric", "Value"])
-
+    start = results["week_start"].strftime("%b %d, %Y")
+    end = (results["week_end"] - timedelta(days=1)).strftime("%b %d, %Y")
     metrics = [
-        ("Reporting Period", f"{week_start} to {week_end}"),
+        ("Reporting Period", f"{start} to {end}"),
         ("Previous Week Losses", results["weekly_total"]),
         ("Cumulative Losses", results["cumulative_total"]),
         ("Average Weekly Losses", results["average_weekly_loss"]),
-        ("Annualized Previous Week", results["annualized_projection"]),
+        ("Annualized Projection (Previous Week x 52)", results["annualized_projection"]),
         ("Annualized Historical", results["annualized_historical"]),
     ]
-
-    for metric, value in metrics:
-        if isinstance(value, Decimal):
-            value = float(value)
-
-        ws.append([metric, value])
-
+    ws.append(["Financial Metric", "Value"])
+    for label, value in metrics:
+        ws.append([label, float(value) if isinstance(value, Decimal) else value])
+    style_table(ws)
+    ws.column_dimensions["A"].width = 48
+    ws.column_dimensions["B"].width = 38
     for row in range(3, ws.max_row + 1):
         ws.cell(row, 2).number_format = CURRENCY_FORMAT
+    ws["B3"].font = Font(name="Aptos", size=12, bold=True, color=NAVY)
+    ws["B6"].font = Font(name="Aptos", size=12, bold=True, color=NAVY)
 
-    style_table(ws)
-
-    ws.column_dimensions["A"].width = 42
-    ws.column_dimensions["B"].width = 45
-
-    ws.page_setup.fitToHeight = 1
-
-
-# --------------------------------------------------
-# JOB BREAKDOWN
-# --------------------------------------------------
 
 def build_job_breakdown(wb, results):
     ws = wb.create_sheet("Job Breakdown")
-
     ws.append(["Job", "Previous Week Loss"])
-
     for job, amount in sorted(
-        results["weekly_by_job"].items(),
-        key=lambda item: item[1],
-        reverse=True,
+        results["weekly_by_job"].items(), key=lambda item: item[1], reverse=True
     ):
         ws.append([job, float(amount)])
-
+    style_table(ws)
+    ws.column_dimensions["A"].width = 48
+    ws.column_dimensions["B"].width = 26
     for row in range(2, ws.max_row + 1):
         ws.cell(row, 2).number_format = CURRENCY_FORMAT
 
-    style_table(ws)
-
-    ws.column_dimensions["A"].width = 55
-    ws.column_dimensions["B"].width = 30
-
-
-# --------------------------------------------------
-# DAMAGE REGISTER
-# --------------------------------------------------
 
 def build_damage_register(wb, records):
     ws = wb.create_sheet("Damage Register")
-
-    ws.append([
-        "Job",
-        "Description",
-        "Room",
-        "Quantity",
-        "Cost Type",
-        "Current Cost",
-        "Status",
-    ])
-
+    ws.append(["Job", "Item", "Room", "Quantity", "Cost Type", "Cost", "Status"])
     for record in records:
-        cost = record["current_cost"]
-
+        raw_cost = record["current_cost"]
+        cost = float(Decimal(str(raw_cost))) if raw_cost not in (None, "") else None
         ws.append([
-            record["job_name"],
-            record["description"],
-            record["room"],
-            record["quantity"],
-            record["cost_type"],
-            float(Decimal(cost)) if cost is not None else None,
-            record["status"],
+            record["job_name"], record["description"], record["room"],
+            record["quantity"], record["cost_type"], cost, record["status"],
         ])
-
+    style_table(ws)
+    for column, width in {"A": 30, "B": 40, "C": 24, "D": 14,
+                          "E": 20, "F": 18, "G": 20}.items():
+        ws.column_dimensions[column].width = width
     for row in range(2, ws.max_row + 1):
         ws.cell(row, 6).number_format = CURRENCY_FORMAT
 
-    style_table(ws)
-
-    column_widths = {
-        "A": 24,
-        "B": 36,
-        "C": 22,
-        "D": 14,
-        "E": 20,
-        "F": 20,
-        "G": 18,
-    }
-
-    for column, width in column_widths.items():
-        ws.column_dimensions[column].width = width
-
-
-# --------------------------------------------------
-# HISTORICAL TRENDS TABLE
-# --------------------------------------------------
 
 def build_historical_trends(wb, results):
     ws = wb.create_sheet("Historical Trends")
-
-    ws.append([
-        "Week Starting",
-        "Weekly Loss",
-        "Cumulative Loss",
-    ])
-
+    ws.append(["Week Starting", "Weekly Loss", "Cumulative Loss"])
     running_total = Decimal("0")
-
     for week in results["weekly_history"]:
         running_total += week["total"]
-
         ws.append([
             week["week_start"].strftime("%b %d, %Y"),
-            float(week["total"]),
-            float(running_total),
+            float(week["total"]), float(running_total),
         ])
-
-    for row in range(2, ws.max_row + 1):
-        ws.cell(row, 2).number_format = CURRENCY_FORMAT
-        ws.cell(row, 3).number_format = CURRENCY_FORMAT
-
     style_table(ws)
+    for column in (2, 3):
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row, column).number_format = CURRENCY_FORMAT
+    for column in "ABC":
+        ws.column_dimensions[column].width = 26
 
-    ws.column_dimensions["A"].width = 30
-    ws.column_dimensions["B"].width = 30
-    ws.column_dimensions["C"].width = 30
+
+def choose_axis_scale(values):
+    """Return a readable Y-axis ceiling and tick spacing."""
+    peak = max([0.0] + [float(value) for value in values])
+    if peak <= 0:
+        return 100.0, 25.0
+    target = peak * 1.12 / 4
+    magnitude = 10 ** floor(log10(target))
+    step = next(
+        (factor * magnitude for factor in (1, 2, 2.5, 5, 10)
+         if factor * magnitude >= target),
+        10 * magnitude,
+    )
+    ceiling = max(step, ceil(peak * 1.12 / step) * step)
+    return float(ceiling), float(step)
 
 
-# --------------------------------------------------
-# CHART WORKSHEET FORMATTING
-# --------------------------------------------------
+def make_chart_image(weeks, values, title, chart_kind):
+    """Create a print-quality PNG in memory for embedding in Excel."""
+    fig, ax = plt.subplots(figsize=(12.5, 6.4), dpi=160)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+    positions = list(range(len(weeks)))
+    ceiling, step = choose_axis_scale(values)
+    ax.set_ylim(0, ceiling)
+    ax.yaxis.set_major_locator(MultipleLocator(step))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda number, _: f"${number:,.0f}"))
+    ax.grid(axis="y", color="#DCE4EC", linewidth=1)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#9DAAB8")
+    ax.spines["bottom"].set_color("#9DAAB8")
+    ax.tick_params(axis="both", labelsize=12, length=0, pad=10)
+    ax.set_title(title, fontsize=20, fontweight="bold", color="#17365D", pad=25)
+    ax.set_ylabel("Losses ($)", fontsize=13, labelpad=12)
+    ax.set_xlabel("Week Starting", fontsize=13, labelpad=14)
+    ax.set_xticks(positions)
+    ax.set_xticklabels(weeks, rotation=35 if len(weeks) > 8 else 0,
+                       ha="right" if len(weeks) > 8 else "center")
+    ax.set_xlim(-2, 2) if len(weeks) == 1 else ax.set_xlim(-0.7, len(weeks) - 0.3)
+
+    if chart_kind == "weekly":
+        ax.bar(positions, values, width=0.55, color="#477FB8")
+    else:
+        if len(positions) > 1:
+            ax.plot(positions, values, color="#4F9A65", linewidth=3,
+                    marker="o", markersize=9)
+        else:
+            ax.scatter(positions, values, color="#4F9A65", s=110, zorder=4)
+
+    for x, value in zip(positions, values):
+        if value != 0:
+            ax.annotate(f"${value:,.2f}", (x, value), xytext=(0, 10),
+                        textcoords="offset points", ha="center", va="bottom",
+                        fontsize=11, fontweight="bold", color="#263746")
+
+    fig.subplots_adjust(left=0.11, right=0.97, top=0.85, bottom=0.19)
+    buffer = BytesIO()
+    fig.savefig(buffer, format="png", dpi=160, facecolor="white")
+    plt.close(fig)
+    buffer.seek(0)
+    return buffer
+
 
 def configure_chart_sheet(ws):
-    """Configure a separate printable worksheet for each chart."""
-
     configure_printing(ws, repeat_headers=False)
-
-    ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
-
-    ws.sheet_view.showGridLines = False
+    for col in range(1, 17):
+        ws.column_dimensions[get_column_letter(col)].width = 10
+    for row in range(1, 36):
+        ws.row_dimensions[row].height = 20
     ws.print_area = "A1:P35"
-
-    for column_number in range(1, 17):
-        column_letter = get_column_letter(column_number)
-        ws.column_dimensions[column_letter].width = 10
-
-    for row_number in range(1, 36):
-        ws.row_dimensions[row_number].height = 20
 
 
 def show_no_data_message(ws):
-    """Display a message instead of an empty chart."""
-
-    from openpyxl.styles import Font, Alignment
-
-    ws.merge_cells("B10:N13")
-
+    ws.merge_cells("B10:O13")
     cell = ws["B10"]
-    cell.value = (
-        "No financial losses recorded "
-        "for this reporting period."
-    )
+    cell.value = "No financial losses recorded for this reporting period."
+    cell.font = Font(name="Aptos", size=18, bold=True, color="666666")
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    cell.font = Font(
-        name="Aptos",
-        size=18,
-        bold=True,
-        color="666666",
-    )
 
-    cell.alignment = Alignment(
-        horizontal="center",
-        vertical="center",
-        wrap_text=True,
-    )
+def insert_chart_image(ws, weeks, values, title, kind, image_buffers):
+    image_buffer = make_chart_image(weeks, values, title, kind)
+    image_buffers.append(image_buffer)  # Keep the PNG available until workbook save.
+    chart_image = ExcelImage(image_buffer)
+    chart_image.width = 950
+    chart_image.height = 486
+    ws.add_image(chart_image, "B2")
 
-# --------------------------------------------------
-# WEEKLY LOSS CHART
-# --------------------------------------------------
 
-def build_weekly_loss_chart(wb):
-    data_ws = wb["Historical Trends"]
+def build_weekly_loss_chart(wb, results, image_buffers):
     ws = wb.create_sheet("Weekly Loss Chart")
-
-        # Don't create a chart when there is no data.
-    if data_ws.max_row <= 1:
-        configure_chart_sheet(ws)
+    configure_chart_sheet(ws)
+    history = results["weekly_history"]
+    if not history:
         show_no_data_message(ws)
         return
-
-    chart = BarChart()
-    chart.type = "col"
-    chart.style = 10
-
-    chart.title = "Weekly Financial Losses"
-    chart.y_axis.title = "Loss ($)"
-    chart.x_axis.title = "Reporting Week"
-
-    # Determine readable dollar increments.
-    values = [
-        float(data_ws.cell(row, 2).value or 0)
-        for row in range(2, data_ws.max_row + 1)
-    ]
-
-    step, maximum = choose_dollar_axis(
-        max(values, default=0)
-    )
-
-    chart.y_axis.scaling.min = 0
-    chart.y_axis.scaling.max = maximum
-    chart.y_axis.majorUnit = step
-    chart.y_axis.numFmt = '"$"#,##0'
-    chart.y_axis.tickLblPos = "nextTo"
-
-    # Display reporting-week dates.
-    chart.x_axis.tickLblPos = "nextTo"
-
-    set_axis_font_size(chart.x_axis, 14)
-    set_axis_font_size(chart.y_axis, 14)
-
-    chart.add_data(
-        Reference(
-            data_ws,
-            min_col=2,
-            min_row=1,
-            max_row=data_ws.max_row,
-        ),
-        titles_from_data=True,
-    )
-
-    if data_ws.max_row > 1:
-        chart.set_categories(
-            Reference(
-                data_ws,
-                min_col=1,
-                min_row=2,
-                max_row=data_ws.max_row,
-            )
-        )
-
-    # Display exact dollar values above bars.
-    chart.dataLabels = DataLabelList()
-    chart.dataLabels.showVal = True
-    chart.dataLabels.dLblPos = "outEnd"
-
-    set_data_label_font_size(chart, 14)
-
-    # One series, so no legend is necessary.
-    chart.legend = None
-
-    chart.width = 25
-    chart.height = 16
-
-    ws.add_chart(chart, "B2")
-    configure_chart_sheet(ws)
+    weeks = [entry["week_start"].strftime("%b %d, %Y") for entry in history]
+    values = [float(entry["total"]) for entry in history]
+    insert_chart_image(ws, weeks, values, "Weekly Financial Losses", "weekly", image_buffers)
 
 
-# --------------------------------------------------
-# CUMULATIVE LOSS CHART
-# --------------------------------------------------
-
-def build_cumulative_loss_chart(wb):
-    data_ws = wb["Historical Trends"]
+def build_cumulative_loss_chart(wb, results, image_buffers):
     ws = wb.create_sheet("Cumulative Loss Chart")
-
-        # Don't create a chart when there is no data.
-    if data_ws.max_row <= 1:
-        configure_chart_sheet(ws)
+    configure_chart_sheet(ws)
+    history = results["weekly_history"]
+    if not history:
         show_no_data_message(ws)
         return
-
-    chart = LineChart()
-    chart.style = 13
-
-    chart.title = "Cumulative Financial Losses"
-    chart.y_axis.title = "Total Loss ($)"
-    chart.x_axis.title = "Reporting Week"
-
-    # Determine readable dollar increments.
-    values = [
-        float(data_ws.cell(row, 3).value or 0)
-        for row in range(2, data_ws.max_row + 1)
-    ]
-
-    step, maximum = choose_dollar_axis(
-        max(values, default=0)
-    )
-
-    chart.y_axis.scaling.min = 0
-    chart.y_axis.scaling.max = maximum
-    chart.y_axis.majorUnit = step
-    chart.y_axis.numFmt = '"$"#,##0'
-    chart.y_axis.tickLblPos = "nextTo"
-
-    chart.x_axis.tickLblPos = "nextTo"
-
-    set_axis_font_size(chart.x_axis, 14)
-    set_axis_font_size(chart.y_axis, 14)
-
-    chart.add_data(
-        Reference(
-            data_ws,
-            min_col=3,
-            min_row=1,
-            max_row=data_ws.max_row,
-        ),
-        titles_from_data=True,
-    )
-
-    if data_ws.max_row > 1:
-        chart.set_categories(
-            Reference(
-                data_ws,
-                min_col=1,
-                min_row=2,
-                max_row=data_ws.max_row,
-            )
-        )
-
-    # Visible markers for each week's cumulative total.
-    for series in chart.series:
-        series.marker.symbol = "circle"
-        series.marker.size = 10
-        series.graphicalProperties.line.width = 28575
-
-    # Display exact dollar values near points.
-    chart.dataLabels = DataLabelList()
-    chart.dataLabels.showVal = True
-    chart.dataLabels.dLblPos = "t"
-
-    set_data_label_font_size(chart, 14)
-
-    # Position legend beneath the chart.
-    if chart.legend is not None:
-        chart.legend.position = "b"
-
-    chart.width = 25
-    chart.height = 16
-
-    ws.add_chart(chart, "B2")
-    configure_chart_sheet(ws)
+    weeks = [entry["week_start"].strftime("%b %d, %Y") for entry in history]
+    running = 0.0
+    values = []
+    for entry in history:
+        running += float(entry["total"])
+        values.append(running)
+    insert_chart_image(ws, weeks, values, "Cumulative Financial Losses", "cumulative", image_buffers)
 
 
-# --------------------------------------------------
-# REPORT GENERATION
-# --------------------------------------------------
-
-def generate_report():
+def generate_report(now=None):
     """Generate the complete Excel management report."""
-
     events = get_financial_events()
-    results = calculate_analytics(events)
+    results = calculate_analytics(events, now=now)
     damage_records = get_damage_register()
+    
+    # results = calculate_analytics(
+    #     events,
+    #     now=datetime(
+    #         2026, 10, 12, 9, 0,
+    #         tzinfo=LOCAL_TIMEZONE
+    #     )
+    # )
+
+    print("\n--- REPORT SUMMARY ---")
+    print("Reporting period:", results["week_start"], "to", results["week_end"])
+    print("Weekly total:", results["weekly_total"])
+    print("Annualized projection:", results["annualized_projection"])
+    print("--- END SUMMARY ---\n")
 
     wb = Workbook()
-
+    image_buffers = []
     build_executive_summary(wb, results)
     build_job_breakdown(wb, results)
     build_damage_register(wb, damage_records)
     build_historical_trends(wb, results)
-
-    build_weekly_loss_chart(wb)
-    build_cumulative_loss_chart(wb)
+    build_weekly_loss_chart(wb, results, image_buffers)
+    build_cumulative_loss_chart(wb, results, image_buffers)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(
-        LOCAL_TIMEZONE
-    ).strftime("%Y-%m-%d_%H%M")
-
-    filename = f"Breakage_Report_{timestamp}.xlsx"
-    output_path = REPORT_DIR / filename
-
-    wb.save(output_path)
-
+    timestamp = datetime.now(LOCAL_TIMEZONE).strftime("%Y-%m-%d_%H%M%S")
+    output_path = REPORT_DIR / f"Breakage_Report_{timestamp}.xlsx"
+    try:
+        wb.save(output_path)
+    finally:
+        for buffer in image_buffers:
+            buffer.close()
     print(f"Excel report generated: {output_path}")
-
     return output_path
 
 
