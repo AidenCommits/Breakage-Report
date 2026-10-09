@@ -273,7 +273,7 @@ def build_executive_summary(wb, results):
         ("Previous Week Losses", results["weekly_total"]),
         ("Cumulative Losses", results["cumulative_total"]),
         ("Average Weekly Losses", results["average_weekly_loss"]),
-        ("Annualized Previous Week", results["annualized_current_week"]),
+        ("Annualized Previous Week", results["annualized_projection"]),
         ("Annualized Historical", results["annualized_historical"]),
     ]
 
