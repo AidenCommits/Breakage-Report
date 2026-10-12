@@ -60,7 +60,7 @@ def get_week_start(date):
     )
 
 
-def calculate_analytics(events, now=None):
+def calculate_analytics(events, now=None, mode="weekly"):
     """Calculate financial metrics for the previous completed week."""
 
     if now is None:
@@ -132,6 +132,27 @@ def calculate_analytics(events, now=None):
     # Calculate projections AFTER weekly totals are finalized.
     annualized_projection = weekly_total * Decimal("52")
     annualized_historical = average_weekly_loss * Decimal("52")
+
+    if mode == "baseline":
+        baseline_total = cumulative_total
+
+        return {
+            "mode": "baseline",
+            "week_start": None,
+            "week_end": None,
+            "weekly_total": baseline_total,
+            "cumulative_total": baseline_total,
+            "weekly_by_job": {},
+            "weekly_history": [
+                {
+                    "week_start": now,
+                    "total": baseline_total,
+                }
+            ],
+            "average_weekly_loss": Decimal("0"),
+            "annualized_projection": baseline_total * Decimal("52"),
+            "annualized_historical": Decimal("0"),
+        }
 
     return {
         "week_start": week_start,
